@@ -188,9 +188,6 @@ def main():
         if stream_id in manual_streams:
             problems.append("duplicate manual stream ID")
 
-        if guide_id in manual_guide_ids:
-            problems.append("duplicate manual guide ID")
-
         manual_streams.add(stream_id)
         manual_guide_ids.add(guide_id)
 
@@ -208,9 +205,6 @@ def main():
 
         if stream_id in approved:
             problems.append("stream already has an automatic approval")
-
-        if guide_id in used_guide_ids:
-            problems.append("guide ID already assigned to another channel")
 
         if problems:
             manual_errors.append(
@@ -232,6 +226,8 @@ def main():
 
     channel_rows = []
     seen_stream_ids = set()
+    seen_xmltv_ids = set()
+    guide_to_xmltv_ids = {}
 
     for row in all_channels:
 
@@ -247,23 +243,34 @@ def main():
         seen_stream_ids.add(stream_id)
 
         if stream_id in approved:
-            xmltv_id = approved[stream_id][0]
+            guide_id = approved[stream_id][0]
+            xmltv_id = guide_id
+
+            if xmltv_id in seen_xmltv_ids:
+                xmltv_id = stream_id
         else:
+            guide_id = None
             xmltv_id = stream_id
+
+        base_id = xmltv_id
+        suffix = 2
+
+        while xmltv_id in seen_xmltv_ids:
+            xmltv_id = f"{base_id}.{suffix}"
+            suffix += 1
+
+        seen_xmltv_ids.add(xmltv_id)
 
         channel_rows.append(
             (xmltv_id, name, stream_id)
         )
 
-    xmltv_ids = [
-        row[0] for row in channel_rows
-    ]
+        if guide_id:
+            guide_to_xmltv_ids.setdefault(
+                guide_id, []
+            ).append(xmltv_id)
 
-    if len(xmltv_ids) != len(set(xmltv_ids)):
-        print("ERROR: Duplicate XMLTV channel IDs detected.")
-        sys.exit(1)
-
-    guide_ids = set(used_guide_ids)
+    guide_ids = set(guide_to_xmltv_ids)
 
     counts = Counter()
     invalid = 0
@@ -320,7 +327,7 @@ def main():
 
                 channel_id = elem.get("channel", "")
 
-                if channel_id in guide_ids:
+                if channel_id in guide_to_xmltv_ids:
 
                     start_text = elem.get("start", "")
                     stop_text = elem.get("stop", "")
@@ -336,28 +343,31 @@ def main():
                         invalid += 1
 
                     else:
+                        # Copy the guide listing to every stream
+                        # assigned to this source guide ID.
+                        for output_id in guide_to_xmltv_ids[channel_id]:
 
-                        # Prevent exact duplicate programme entries.
-                        key = (
-                            channel_id,
-                            start_text,
-                            stop_text,
-                            elem.findtext("title", default="")
-                        )
-
-                        if key in seen_programmes:
-                            duplicate_programmes += 1
-                        else:
-                            seen_programmes.add(key)
-
-                            out.write(
-                                ET.tostring(
-                                    elem,
-                                    encoding="unicode"
-                                ) + "\n"
+                            key = (
+                                output_id,
+                                start_text,
+                                stop_text,
+                                elem.findtext("title", default="")
                             )
 
-                            counts[channel_id] += 1
+                            if key in seen_programmes:
+                                duplicate_programmes += 1
+                            else:
+                                seen_programmes.add(key)
+                                elem.set("channel", output_id)
+
+                                out.write(
+                                    ET.tostring(
+                                        elem,
+                                        encoding="unicode"
+                                    ) + "\n"
+                                )
+
+                                counts[output_id] += 1
 
                 elem.clear()
 
@@ -367,8 +377,8 @@ def main():
         out.write("</tv>\n")
 
     mapped_with_listings = sum(
-        1 for guide_id in guide_ids
-        if counts[guide_id] > 0
+        1 for xmltv_id, _, stream_id in channel_rows
+        if stream_id in approved and counts[xmltv_id] > 0
     )
 
     total_programmes = sum(counts.values())
