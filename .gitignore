@@ -1,0 +1,18 @@
+# Credentials and private provider data
+fetch_channels.py
+provider_channels.json
+url.txt
+.env
+
+# Local Python environment
+.venv/
+__pycache__/
+*.pyc
+
+# Source XMLTV guides
+guide.xml
+provider_guide.xml
+
+# Local backups
+epg_backup.xml
+test_xmltv.py
