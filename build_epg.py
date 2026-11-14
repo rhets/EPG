@@ -31,6 +31,7 @@ GUIDE_FILE = BASE / "provider_guide.xml"
 ALL_CHANNELS_FILE = BASE / "epg_review_with_warnings.csv"
 STRONG_FILE = BASE / "strong_match_candidates.csv"
 TITLE_REVIEW_FILE = BASE / "strong_match_title_review.csv"
+MANUAL_FILE = BASE / "production_manual_approvals.csv"
 OUTPUT_FILE = BASE / "epg.xml"
 
 GOOD_SAMPLE_LABEL = "SAMPLES LOOK USEFUL - still verify channel identity"
@@ -83,7 +84,8 @@ def main():
         GUIDE_FILE,
         ALL_CHANNELS_FILE,
         STRONG_FILE,
-        TITLE_REVIEW_FILE
+        TITLE_REVIEW_FILE,
+        MANUAL_FILE
     ]
 
     for path in required_files:
@@ -96,6 +98,7 @@ def main():
     all_channels = read_csv(ALL_CHANNELS_FILE)
     strong_rows = read_csv(STRONG_FILE)
     title_rows = read_csv(TITLE_REVIEW_FILE)
+    manual_rows = read_csv(MANUAL_FILE)
 
     # Map guide IDs to their title-review status.
     # The review file must contain guide_id and sample_review columns.
@@ -145,6 +148,85 @@ def main():
         approved[stream_id] = (guide_id, provider_name)
         used_guide_ids.add(guide_id)
 
+    # Validate and add manually approved US channels.
+    provider_by_stream = {
+        str(row.get("stream_id", "")).strip():
+        clean_text(row.get("provider_name", ""))
+        for row in all_channels
+    }
+
+    print("Checking manual production approvals...")
+
+    guide_channel_ids = set()
+    guide_programme_counts = Counter()
+
+    for event, elem in ET.iterparse(
+        str(GUIDE_FILE),
+        events=("end",)
+    ):
+        if elem.tag == "channel":
+            guide_channel_ids.add(elem.get("id", ""))
+            elem.clear()
+        elif elem.tag == "programme":
+            guide_programme_counts[elem.get("channel", "")] += 1
+            elem.clear()
+
+    manual_streams = set()
+    manual_guide_ids = set()
+    manual_errors = []
+
+    for row in manual_rows:
+        stream_id = str(row.get("stream_id", "")).strip()
+        guide_id = str(row.get("guide_id", "")).strip()
+        provider_name = clean_text(row.get("provider_name", ""))
+
+        problems = []
+
+        if not stream_id or not guide_id:
+            problems.append("missing stream or guide ID")
+
+        if stream_id in manual_streams:
+            problems.append("duplicate manual stream ID")
+
+        if guide_id in manual_guide_ids:
+            problems.append("duplicate manual guide ID")
+
+        manual_streams.add(stream_id)
+        manual_guide_ids.add(guide_id)
+
+        if provider_by_stream.get(stream_id) != provider_name:
+            problems.append("provider name does not match stream ID")
+
+        if not provider_name.startswith("US|"):
+            problems.append("not identified as a US provider channel")
+
+        if guide_id not in guide_channel_ids:
+            problems.append("guide ID not found in XMLTV")
+
+        if guide_programme_counts[guide_id] == 0:
+            problems.append("guide ID has no programmes")
+
+        if stream_id in approved:
+            problems.append("stream already has an automatic approval")
+
+        if guide_id in used_guide_ids:
+            problems.append("guide ID already assigned to another channel")
+
+        if problems:
+            manual_errors.append(
+                f"{stream_id} / {guide_id}: " + ", ".join(problems)
+            )
+        else:
+            approved[stream_id] = (guide_id, provider_name)
+            used_guide_ids.add(guide_id)
+
+    if manual_errors:
+        print("ERROR: Manual production approvals failed validation:")
+        for error in manual_errors:
+            print(" -", error)
+        sys.exit(1)
+
+    print(f"Manual production approvals added: {len(manual_rows):,}")
     print(f"Approved matches: {len(approved):,}")
     print("Preparing provider channels...")
 
